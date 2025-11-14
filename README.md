@@ -6,4 +6,4 @@ Qualifying paper #2 with Trevor Campbell:
 
 
 
-## The project will compare sequential and Bayesian optimization for hyperparameter tuning and benchmark against NUTS.
+###The project will compare sequential and Bayesian optimization for hyperparameter tuning and benchmark against NUTS.
