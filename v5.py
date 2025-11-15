@@ -891,6 +891,8 @@ def run_adjusted_mclmc_dynamic(
     """
     start_time = time.time()
     
+    print("      [Initializing...]", end=" ", flush=True)
+    
     # Split key for different stages
     init_key, tune_key, run_key = jax.random.split(key, 3)
     
@@ -900,6 +902,12 @@ def run_adjusted_mclmc_dynamic(
         logdensity_fn=logdensity_fn,
         random_generator_arg=init_key,
     )
+    
+    print("done", flush=True)
+    
+    print("done", flush=True)
+    
+    print("      [Building kernel...]", end=" ", flush=True)
     
     # Define integration steps function (optionally random)
     if random_trajectory_length:
@@ -922,6 +930,9 @@ def run_adjusted_mclmc_dynamic(
             L_proposal_factor=L_proposal_factor,
         )
     
+    print("done", flush=True)
+    print("      [Auto-tuning hyperparameters (this may take a while)...]", end=" ", flush=True)
+    
     # Run automatic tuning procedure
     target_acc_rate = 0.9
     (
@@ -939,6 +950,11 @@ def run_adjusted_mclmc_dynamic(
         frac_tune3=0.1,  # Fraction for third phase
         diagonal_preconditioning=diagonal_preconditioning,
     )
+    
+    print("done", flush=True)
+    
+    print("done", flush=True)
+    print("      [Sampling with tuned parameters...]", end=" ", flush=True)
     
     # Extract tuned parameters
     step_size = blackjax_mclmc_sampler_params.step_size
@@ -964,6 +980,8 @@ def run_adjusted_mclmc_dynamic(
         transform=transform,
         progress_bar=False,
     )
+    
+    print("done", flush=True)
     
     time_elapsed = time.time() - start_time
     
@@ -1510,6 +1528,8 @@ def compare_mams_tuning_methods(dim=5, num_chains=4, num_steps=1000):
     print("  - BayesOpt Chain 0 and Auto Chain 0: SAME random trajectory")
     print("  - BayesOpt Chain 1 and Auto Chain 1: SAME random trajectory")
     print("  - Only difference is the hyperparameters!")
+    print("\nNOTE: First chain may be slower due to JAX JIT compilation.")
+    print("Subsequent chains will be faster.\n")
     
     # Use the SAME base key as BayesOpt validation
     auto_samples, auto_ess, auto_acc, auto_step_sizes, auto_L, auto_time = \
@@ -1903,6 +1923,329 @@ def verify_reproducibility_demo():
 # MAIN EXECUTION
 # ============================================================================
 
+# ============================================================================
+# MAIN EXECUTION WITH COMPLETE RESULTS
+# ============================================================================
+
+def run_all_experiments(dim=5, num_chains=4, num_steps=1000):
+    """
+    Run all experiments and collect comprehensive results.
+    
+    Args:
+        dim: Dimensionality of target distribution
+        num_chains: Number of validation chains
+        num_steps: Steps per validation chain
+        
+    Returns:
+        Dictionary with all experimental results
+    """
+    results = {
+        'config': {
+            'dim': dim,
+            'num_chains': num_chains,
+            'num_steps': num_steps,
+        },
+        'algorithm_comparison': None,
+        'tuning_comparison': None,
+        'timing_summary': {},
+    }
+    
+    print("\n" + "="*70)
+    print("STARTING ALL EXPERIMENTS")
+    print("="*70)
+    print(f"\nConfiguration:")
+    print(f"  Dimensionality: {dim}")
+    print(f"  Validation chains: {num_chains}")
+    print(f"  Steps per chain: {num_steps}")
+    
+    total_start_time = time.time()
+    
+    # ========================================================================
+    # EXPERIMENT 1: Compare all algorithms with BayesOpt
+    # ========================================================================
+    try:
+        print("\n" + "="*70)
+        print("EXPERIMENT 1: ALGORITHM COMPARISON (NUTS, MCLMC, MAMS)")
+        print("="*70)
+        
+        exp1_start = time.time()
+        nuts_results, mclmc_results, mams_results = compare_algorithms(dim=dim)
+        exp1_time = time.time() - exp1_start
+        
+        results['algorithm_comparison'] = {
+            'nuts': nuts_results,
+            'mclmc': mclmc_results,
+            'mams': mams_results,
+            'time': exp1_time,
+        }
+        
+        print(f"\n✓ Experiment 1 completed in {exp1_time:.2f}s")
+        
+    except Exception as e:
+        print(f"\n✗ Experiment 1 failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ========================================================================
+    # EXPERIMENT 2: BayesOpt vs Auto-tuning for MAMS
+    # ========================================================================
+    try:
+        print("\n" + "="*70)
+        print("EXPERIMENT 2: BAYESOPT VS AUTOMATIC TUNING")
+        print("="*70)
+        
+        exp2_start = time.time()
+        bayesopt_samples, auto_samples, mams_tuning = compare_mams_tuning_methods(
+            dim=dim, 
+            num_chains=num_chains, 
+            num_steps=num_steps
+        )
+        exp2_time = time.time() - exp2_start
+        
+        results['tuning_comparison'] = {
+            'bayesopt_samples': bayesopt_samples,
+            'auto_samples': auto_samples,
+            'mams_results': mams_tuning,
+            'time': exp2_time,
+        }
+        
+        print(f"\n✓ Experiment 2 completed in {exp2_time:.2f}s")
+        
+    except Exception as e:
+        print(f"\n✗ Experiment 2 failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ========================================================================
+    # COMPUTE FINAL SUMMARY
+    # ========================================================================
+    total_time = time.time() - total_start_time
+    
+    print("\n" + "="*70)
+    print("ALL EXPERIMENTS COMPLETED")
+    print("="*70)
+    print(f"\nTotal execution time: {total_time:.2f}s ({total_time/60:.1f} minutes)")
+    
+    # Create comprehensive summary
+    print("\n" + "="*70)
+    print("COMPREHENSIVE RESULTS SUMMARY")
+    print("="*70)
+    
+    # Experiment 1 summary
+    if results['algorithm_comparison'] is not None:
+        print("\n" + "-"*70)
+        print("EXPERIMENT 1: ALGORITHM COMPARISON")
+        print("-"*70)
+        
+        alg_comp = results['algorithm_comparison']
+        
+        # Extract best results for each algorithm
+        for alg_name, alg_results in [('NUTS', alg_comp['nuts']), 
+                                       ('MCLMC', alg_comp['mclmc']), 
+                                       ('MAMS', alg_comp['mams'])]:
+            best_idx = jnp.argmax(jnp.array(alg_results['objective']))
+            best_params = alg_results['hyperparams'][best_idx]
+            best_ess = alg_results['ess'][best_idx]
+            best_acc = alg_results['acceptance_rate'][best_idx]
+            best_obj = alg_results['objective'][best_idx]
+            avg_time = np.mean(alg_results['time_per_eval'])
+            
+            print(f"\n{alg_name}:")
+            print(f"  Best hyperparameters: {best_params}")
+            print(f"  Best ESS: {best_ess:.1f}")
+            print(f"  Best acceptance: {best_acc:.3f}")
+            print(f"  Best objective: {best_obj:.1f}")
+            print(f"  Avg time per eval: {avg_time:.2f}s")
+        
+        print(f"\nTotal time for Experiment 1: {alg_comp['time']:.2f}s")
+    
+    # Experiment 2 summary
+    if results['tuning_comparison'] is not None:
+        print("\n" + "-"*70)
+        print("EXPERIMENT 2: TUNING METHOD COMPARISON")
+        print("-"*70)
+        
+        tune_comp = results['tuning_comparison']
+        bayesopt_samples = tune_comp['bayesopt_samples']
+        auto_samples = tune_comp['auto_samples']
+        
+        # Compute ESS for comparison
+        bayesopt_ess_all = []
+        for i in range(bayesopt_samples.shape[0]):
+            bayesopt_ess_all.append(compute_ess(bayesopt_samples[i]))
+        bayesopt_mean_ess = np.mean(bayesopt_ess_all)
+        
+        auto_ess_all = []
+        for i in range(auto_samples.shape[0]):
+            auto_ess_all.append(compute_ess(auto_samples[i]))
+        auto_mean_ess = np.mean(auto_ess_all)
+        
+        # Compute R-hat
+        bayesopt_rhat = compute_rhat(bayesopt_samples)
+        auto_rhat = compute_rhat(auto_samples)
+        
+        print(f"\nBayesian Optimization:")
+        print(f"  Mean ESS: {bayesopt_mean_ess:.1f}")
+        print(f"  Max R-hat: {jnp.max(bayesopt_rhat):.4f}")
+        print(f"  Convergence: {'✓ Good' if jnp.max(bayesopt_rhat) < 1.01 else '⚠ Needs more steps'}")
+        
+        print(f"\nAutomatic Tuning:")
+        print(f"  Mean ESS: {auto_mean_ess:.1f}")
+        print(f"  Max R-hat: {jnp.max(auto_rhat):.4f}")
+        print(f"  Convergence: {'✓ Good' if jnp.max(auto_rhat) < 1.01 else '⚠ Needs more steps'}")
+        
+        # Winner
+        if bayesopt_mean_ess > auto_mean_ess * 1.1:
+            winner = "BayesOpt"
+            improvement = 100 * (bayesopt_mean_ess / auto_mean_ess - 1)
+        elif auto_mean_ess > bayesopt_mean_ess * 1.1:
+            winner = "Auto-tuning"
+            improvement = 100 * (auto_mean_ess / bayesopt_mean_ess - 1)
+        else:
+            winner = "Tie"
+            improvement = 0
+        
+        print(f"\nWinner: {winner}")
+        if winner != "Tie":
+            print(f"  Improvement: {improvement:.1f}%")
+        
+        print(f"\nTotal time for Experiment 2: {tune_comp['time']:.2f}s")
+    
+    # # Save results to file
+    # print("\n" + "="*70)
+    # print("SAVING RESULTS")
+    # print("="*70)
+    
+    # try:
+    #     import pickle
+    #     with open('mcmc_comparison_results.pkl', 'wb') as f:
+    #         pickle.dump(results, f)
+    #     print("✓ Results saved to 'mcmc_comparison_results.pkl'")
+    # except Exception as e:
+    #     print(f"⚠ Could not save results: {e}")
+    
+    # return results
+    
+    # Save results to file
+    print("\n" + "="*70)
+    print("SAVING RESULTS")
+    print("="*70)
+    
+    try:
+        import csv
+        import json
+        
+        # Save as CSV (tuning history)
+        if results['algorithm_comparison'] is not None:
+            for alg_name in ['nuts', 'mclmc', 'mams']:
+                alg_results = results['algorithm_comparison'][alg_name]
+                filename = f'{alg_name}_tuning_history.csv'
+                
+                with open(filename, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    # Header
+                    header = ['iteration', 'ess', 'acceptance_rate', 'objective', 'time_per_eval']
+                    # Add hyperparameter columns
+                    if alg_results['hyperparams']:
+                        for key in alg_results['hyperparams'][0].keys():
+                            header.append(key)
+                    writer.writerow(header)
+                    
+                    # Data rows
+                    for i in range(len(alg_results['iteration'])):
+                        row = [
+                            alg_results['iteration'][i],
+                            alg_results['ess'][i],
+                            alg_results['acceptance_rate'][i],
+                            alg_results['objective'][i],
+                            alg_results['time_per_eval'][i]
+                        ]
+                        # Add hyperparameter values
+                        for key in alg_results['hyperparams'][i].keys():
+                            row.append(alg_results['hyperparams'][i][key])
+                        writer.writerow(row)
+                
+                print(f"✓ Saved {filename}")
+        
+        # Save summary as JSON (readable text format)
+        summary = {
+            'config': results['config'],
+            'timing': {
+                'total_time': total_time,
+            }
+        }
+        
+        # Add best results for each algorithm
+        if results['algorithm_comparison'] is not None:
+            summary['best_hyperparameters'] = {}
+            for alg_name in ['nuts', 'mclmc', 'mams']:
+                alg_results = results['algorithm_comparison'][alg_name]
+                best_idx = int(jnp.argmax(jnp.array(alg_results['objective'])))
+                summary['best_hyperparameters'][alg_name] = {
+                    'hyperparams': alg_results['hyperparams'][best_idx],
+                    'ess': float(alg_results['ess'][best_idx]),
+                    'acceptance_rate': float(alg_results['acceptance_rate'][best_idx]),
+                    'objective': float(alg_results['objective'][best_idx]),
+                }
+        
+        # Add tuning comparison results
+        if results['tuning_comparison'] is not None:
+            bayesopt_samples = results['tuning_comparison']['bayesopt_samples']
+            auto_samples = results['tuning_comparison']['auto_samples']
+            
+            bayesopt_ess = [float(compute_ess(bayesopt_samples[i])) 
+                           for i in range(bayesopt_samples.shape[0])]
+            auto_ess = [float(compute_ess(auto_samples[i])) 
+                       for i in range(auto_samples.shape[0])]
+            
+            summary['tuning_comparison'] = {
+                'bayesopt': {
+                    'ess_per_chain': bayesopt_ess,
+                    'mean_ess': float(np.mean(bayesopt_ess)),
+                    'std_ess': float(np.std(bayesopt_ess)),
+                    'max_rhat': float(jnp.max(compute_rhat(bayesopt_samples))),
+                },
+                'auto_tuned': {
+                    'ess_per_chain': auto_ess,
+                    'mean_ess': float(np.mean(auto_ess)),
+                    'std_ess': float(np.std(auto_ess)),
+                    'max_rhat': float(jnp.max(compute_rhat(auto_samples))),
+                }
+            }
+        
+        with open('mcmc_comparison_summary.json', 'w') as f:
+            json.dump(summary, f, indent=2)
+        print("✓ Saved mcmc_comparison_summary.json")
+        
+    except Exception as e:
+        print(f"⚠ Could not save results: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def print_quick_start_guide():
+    """Print a guide for running the experiments."""
+    print("\n" + "="*70)
+    print("QUICK START GUIDE")
+    print("="*70)
+    print("\nThis script runs comprehensive MCMC comparisons.")
+    print("\nOPTIONS:")
+    print("\n1. Run all experiments (recommended):")
+    print("   results = run_all_experiments(dim=5, num_chains=4, num_steps=1000)")
+    print("\n2. Run only algorithm comparison:")
+    print("   nuts_res, mclmc_res, mams_res = compare_algorithms(dim=5)")
+    print("\n3. Run only tuning comparison:")
+    print("   bayesopt_samp, auto_samp, mams_res = compare_mams_tuning_methods()")
+    print("\n4. Verify reproducibility:")
+    print("   verify_reproducibility_demo()")
+    print("\nESTIMATED RUNTIME:")
+    print("  - Full experiments: 10-20 minutes")
+    print("  - Algorithm comparison only: 3-5 minutes")
+    print("  - Tuning comparison only: 5-10 minutes")
+    print("  - Reproducibility check: <1 minute")
+    print("="*70)
+
+
 if __name__ == "__main__":
     print("\n" + "="*70)
     print("MCMC HYPERPARAMETER TUNING WITH BAYESIAN OPTIMIZATION")
@@ -1913,37 +2256,22 @@ if __name__ == "__main__":
     print("  3. Comparison of Bayesian optimization vs automatic tuning")
     print("\n" + "="*70)
     
-    # ========================================================================
-    # Optional: Verify reproducibility first
-    # ========================================================================
+    # Print guide
+    print_quick_start_guide()
+    
+    # Ask user what to run
     print("\n" + "="*70)
-    print("REPRODUCIBILITY CHECK (Optional)")
+    print("SELECT EXPERIMENTS TO RUN")
     print("="*70)
-    print("\nWould you like to verify reproducibility first?")
-    print("This ensures our experimental setup is sound.")
-    print("\nUncomment the line below to run the verification:")
-    print("# verify_reproducibility_demo()")
+    print("\nRunning ALL experiments by default...")
+    print("(Edit the script to change this behavior)")
     
-    # Uncomment to run:
-    # verify_reproducibility_demo()
+    # Run all experiments
+    results = run_all_experiments(dim=5, num_chains=4, num_steps=1000)
     
-    # ========================================================================
-    # Main comparison of all algorithms
-    # ========================================================================
     print("\n" + "="*70)
-    print("EXPERIMENT 1: COMPARE ALL ALGORITHMS")
+    print("SCRIPT COMPLETED SUCCESSFULLY")
     print("="*70)
-    print("\nComparing NUTS, MCLMC, and MAMS using Bayesian optimization...")
-    print("This will take a few minutes...")
-    
-    nuts_results, mclmc_results, mams_results = compare_algorithms(dim=5)
-    
-    # ========================================================================
-    # Detailed MAMS comparison: BayesOpt vs Automatic Tuning
-    # ========================================================================
-    print("\n" + "="*70)
-    print("EXPERIMENT 2: BAYESOPT VS AUTOMATIC TUNING")
-    print("="*70)
-    print("\nNow comparing Bayesian optimization against blackjax's")
-    print("automatic tuning for MAMS...")
-    print("This will take longer as we run multiple validation chains...")
+    print("\nResults are stored in the 'results' variable.")
+    print("A summary has been printed above.")
+    print("\n✓ All done!")
