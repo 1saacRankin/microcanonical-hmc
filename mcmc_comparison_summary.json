@@ -5,7 +5,7 @@
     "num_steps": 1000
   },
   "timing": {
-    "total_time": 594.1973080635071
+    "total_time": 326.94801592826843
   },
   "best_hyperparameters": {
     "nuts": {
