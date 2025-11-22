@@ -4,7 +4,7 @@
 
 
 # For Metropolis Adjusted Microcanonical Hamiltonian Monte Carlo (MAMS) there are two hyperparameters:  
-# 1) stepsize e ($\epsilon$) 
+# 1) stepsize ($\epsilon$) 
 # 2) trajectory length L
 
 # Goal: optimize hyperparameters to maximize ESS while keeping acceptance rate near target (squared error).
@@ -13,13 +13,16 @@
 
 
 
-
+# Code here is adapted from the project directory for Robnik et al's paper, Boax for BayesOpt, and BlackJax for NUTS, MCLMC, and MAMS (adjusted MCLMC in blackjax)
+# For Github for the Metropolis adjusted Microcanonical HMC paper https://github.com/reubenharry/sampler-benchmarks
 
 
 #################################################################################################### Import libraries
 # Imports from here: https://blackjax-devs.github.io/sampling-book/algorithms/mclmc.html#how-to-run-mclmc-in-blackjax
 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
+# I always get my matplotlib and ggplot syntax mixed up
+# https://matplotlib.org/stable/users/explain/quick_start.html
 
 plt.rcParams["axes.spines.right"] = False
 plt.rcParams["axes.spines.top"] = False
@@ -35,7 +38,7 @@ import numpyro.distributions as dist
 
 from numpyro.infer.util import initialize_model
 
-rng_key = jax.random.key(548) # Changed
+rng_key = jax.random.key(548) # Changed from time based to course number
 
 
 # Imports for Adjusted MCLMC (MAMS):
@@ -151,59 +154,37 @@ def make_funnel_logdensity(dim):
 
 
 
-# # Find ESS (Effective Sample Size)
-# def compute_ess(samples):
-#     # See: https://python.arviz.org/en/stable/api/generated/arviz.ess.html
-#     # Need to match the expected structure
-#     samples_reshaped = samples[None, :, :]
-#     ess = az.ess(samples_reshaped, method = 'bulk') # Default is bulk
-    
-#     # Return worst, want to maximize the minimum ESS
-#     return float(np.min(ess))
-
-
-# # Find R-hat
-# def compute_rhat(chains): 
-#     # Arviz R-hat: Compute estimate of rank normalized splitR-hat for a set of traces.
-#     # https://python.arviz.org/en/stable/api/generated/arviz.rhat.html#arviz.rhat
-#     rhat = az.rhat(chains)
-#     # Return worst, want to minimize maximum R-hat (minimax)
-#     return float(np.max(rhat))
-
-
-
 
 # Find ESS (Effective Sample Size)
 def compute_ess(samples):
-    # Convert JAX array to NumPy array
+    # See: https://python.arviz.org/en/stable/api/generated/arviz.ess.html
+    # Need to match the expected structure
     samples_np = np.array(samples)
     
-    # ArviZ expects (chain, draw, *variable_shape)
-    samples_reshaped = samples_np[None, :, :]  # (1, n_samples, n_dims)
+    # Arviz expects (chain, draw, *variable_shape)
+    samples_reshaped = samples_np[None, :, :]
     
-    # Convert to ArviZ dataset: https://python.arviz.org/en/stable/api/generated/arviz.convert_to_dataset.html#arviz.convert_to_dataset
+    # Convert to Arviz dataset: https://python.arviz.org/en/stable/api/generated/arviz.convert_to_dataset.html#arviz.convert_to_dataset
     dataset = az.convert_to_dataset(samples_reshaped)
     
     # Compute ESS
-    ess = az.ess(dataset, method='bulk')
+    ess = az.ess(dataset, method = 'bulk')
     
-    # Return worst ESS across all variables
+     # Return worst, want to maximize the minimum ESS (maximin)
     return float(np.min([ess[var].values for var in ess.data_vars]))
 
 
 # Find R-hat
 def compute_rhat(chains): 
-    # Convert JAX array to NumPy array
+    # Arviz R-hat: Compute estimate of rank normalized splitR-hat for a set of traces.
+    # https://python.arviz.org/en/stable/api/generated/arviz.rhat.html#arviz.rhat
     chains_np = np.array(chains)
-    
-    # Shape should be (n_chains, n_samples, n_dims)
-    # Convert to ArviZ dataset
     dataset = az.convert_to_dataset(chains_np)
     
     # Compute R-hat
     rhat = az.rhat(dataset)
     
-    # Return worst R-hat across all variables
+    # Return worst, want to minimize maximum R-hat (minimax)
     return float(np.max([rhat[var].values for var in rhat.data_vars]))
 
 
@@ -226,92 +207,61 @@ def objective_function(ess, acceptance_rate, target_acceptance, lambda_penalty):
 
 
 
-# ============================================================================
-# MCMC SAMPLING FUNCTIONS
-# ============================================================================
+############################################################## MCMC Algorithms with fixed parameters for BayesOpt
 
 def run_nuts_fixed(
-    logdensity_fn, 
-    chain_length, 
-    initial_position, 
-    key, 
-    step_size, 
-    inv_mass_matrix
-):
-    """
-    Run NUTS sampler with fixed hyperparameters.
+    logdensity_fn, # Give it a target density
+    chain_length,  # Number of samples desired
+    initial_position, # Give it a starting poristion
+    key,              # And a key/seed
+    step_size, # Test a stepsize, maybe let it auto-tune since NUTS is a benchmark
+    inv_mass_matrix # Preconditioner, use I
+    ):
     
-    NUTS (No-U-Turn Sampler) automatically tunes trajectory length.
-    We only need to provide step size and mass matrix.
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target log density to sample from
-    chain_length : int
-        Number of samples to generate
-    initial_position : array
-        Starting position for the chain
-    key : PRNGKey
-        Random key for reproducibility
-    step_size : float
-        Leapfrog integration step size
-    inv_mass_matrix : array
-        Inverse mass matrix (diagonal preconditioning)
-        
-    Returns:
-    --------
-    samples : array, shape (chain_length, n_dims)
-        MCMC samples
-    ess : float
-        Effective sample size (minimum across dimensions)
-    avg_acceptance : float
-        Average acceptance probability
-    avg_integration_steps : float
-        Average number of leapfrog steps per sample
-    time_elapsed : float
-        Wall-clock time in seconds
-    """
     # Start timing
     start_time = time.time()
     
-    # Initialize NUTS sampler with given hyperparameters
+    # Give NUTS hyperparameters
     nuts = blackjax.nuts(
-        logdensity_fn=logdensity_fn, 
-        step_size=step_size, 
-        inverse_mass_matrix=inv_mass_matrix
+        logdensity_fn = logdensity_fn, 
+        step_size = step_size, 
+        inverse_mass_matrix = inv_mass_matrix
     )
     
-    # Initialize sampler state at starting position
+    # Initialize NUTS at starting position
     state = nuts.init(initial_position)
     
-    # Define one MCMC step
+    # Define one NUTS step/iteration
     def one_step(state, key):
         # Propose new state and compute diagnostics
         state, info = nuts.step(key, state)
         
-        # Return updated state and tracked quantities
+        # Return updated state and stats
         return state, (state.position, info.acceptance_rate, info.num_integration_steps)
     
-    # Generate random keys for each MCMC step
+    
+    # Keys for each NUTS step/iteration
     keys = jax.random.split(key, chain_length)
     
-    # Run the MCMC chain using JAX's scan
+    # Run the NUTS chain
     final_state, (samples, acceptance_rates, num_steps_per_iter) = jax.lax.scan(
         one_step, 
         state, 
         keys
     )
     
-    # Compute summary statistics
+    # Summary stats
     avg_acceptance = jnp.mean(acceptance_rates)
     ess = compute_ess(samples)
     avg_integration_steps = jnp.mean(num_steps_per_iter)
     time_elapsed = time.time() - start_time
     
+    # Return the chain and stats
     return samples, ess, avg_acceptance, avg_integration_steps, time_elapsed
 
 
+# Run MCLMC with fixed step size and L for optimizing with BayesOpt
+# https://blackjax-devs.github.io/sampling-book/algorithms/mclmc.html#how-to-run-mclmc-in-blackjax
 def run_mclmc_fixed(
     logdensity_fn, 
     chain_length, 
@@ -319,72 +269,39 @@ def run_mclmc_fixed(
     key, 
     L, 
     step_size
-):
-    """
-    Run MCLMC sampler with fixed hyperparameters.
+    ):
     
-    MCLMC (Microcanonical Langevin Monte Carlo) uses continuous dynamics
-    without Metropolis rejection. It always accepts proposals (acc=1.0).
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target log density to sample from
-    chain_length : int
-        Number of samples to generate
-    initial_position : array
-        Starting position for the chain
-    key : PRNGKey
-        Random key for reproducibility
-    L : float
-        Trajectory length (total Hamiltonian simulation time)
-    step_size : float
-        Leapfrog integration step size
-        
-    Returns:
-    --------
-    samples : array, shape (chain_length, n_dims)
-        MCMC samples
-    ess : float
-        Effective sample size
-    avg_acceptance : float
-        Always 1.0 for MCLMC (no rejection)
-    integration_steps_per_iter : float
-        Number of leapfrog steps per sample (L / step_size)
-    time_elapsed : float
-        Wall-clock time in seconds
-    """
     # Start timing
     start_time = time.time()
     
-    # Split key for initialization and sampling
+    # initialization and sampling key/seed
     init_key, run_key = jax.random.split(key)
     
-    # Initialize MCLMC sampler state
+    # Initialize MCLMC
     initial_state = blackjax.mcmc.mclmc.init(
-        position=initial_position, 
-        logdensity_fn=logdensity_fn, 
-        rng_key=init_key
+        position = initial_position, 
+        logdensity_fn = logdensity_fn, 
+        rng_key = init_key
     )
     
-    # Create MCLMC sampling algorithm with fixed hyperparameters
+    # Use the given hyperparameters
     sampling_alg = blackjax.mclmc(
-        logdensity_fn=logdensity_fn,
-        L=L,
-        step_size=step_size,
+        logdensity_fn = logdensity_fn,
+        L = L,
+        step_size = step_size,
     )
     
-    # Run the MCMC chain
+    # Run the chain
     _, samples = blackjax.util.run_inference_algorithm(
-        rng_key=run_key,
-        initial_state=initial_state,
-        inference_algorithm=sampling_alg,
-        num_steps=chain_length,
-        transform=lambda state, _: state.position,
-        progress_bar=False,
-    )
+        rng_key = run_key,
+        initial_state = initial_state,
+        inference_algorithm = sampling_alg,
+        num_steps = chain_length,
+        transform = lambda state, _: state.position,
+        progress_bar = False
+        )
     
-    # Compute summary statistics
+    # Summary stats
     ess = compute_ess(samples)
     avg_acceptance = 1.0  # MCLMC never rejects
     integration_steps_per_iter = L / step_size
@@ -393,6 +310,8 @@ def run_mclmc_fixed(
     return samples, ess, avg_acceptance, integration_steps_per_iter, time_elapsed
 
 
+# Same as MCLMC but now with the Metropolis step so it can reject
+# https://blackjax-devs.github.io/sampling-book/algorithms/mclmc.html#adjusted-mclmc
 def run_mams_fixed(
     logdensity_fn, 
     chain_length, 
@@ -400,82 +319,48 @@ def run_mams_fixed(
     key, 
     L, 
     step_size
-):
-    """
-    Run MAMS sampler with fixed hyperparameters.
+    ):
     
-    MAMS (Metropolis-Adjusted Microcanonical Hamiltonian Monte Carlo)
-    combines microcanonical dynamics with Metropolis acceptance.
-    This gives better stability than pure MCLMC.
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target log density to sample from
-    chain_length : int
-        Number of samples to generate
-    initial_position : array
-        Starting position for the chain
-    key : PRNGKey
-        Random key for reproducibility
-    L : float
-        Trajectory length
-    step_size : float
-        Leapfrog integration step size
-        
-    Returns:
-    --------
-    samples : array, shape (chain_length, n_dims)
-        MCMC samples
-    ess : float
-        Effective sample size
-    avg_acceptance : float
-        Average acceptance probability (target ~0.9)
-    integration_steps_per_iter : float
-        Number of leapfrog steps per sample
-    time_elapsed : float
-        Wall-clock time in seconds
-    """
     # Start timing
     start_time = time.time()
     
-    # Split key for initialization and sampling
+    # Initialization and iteration seeds
     init_key, run_key = jax.random.split(key)
     
-    # Initialize MAMS sampler state
+    # Initialize MAMS
     initial_state = blackjax.mcmc.adjusted_mclmc_dynamic.init(
-        position=initial_position,
-        logdensity_fn=logdensity_fn,
+        position = initial_position,
+        logdensity_fn = logdensity_fn,
         random_generator_arg=init_key,
     )
     
     # Create MAMS algorithm with fixed L
     algorithm = blackjax.adjusted_mclmc_dynamic(
-        logdensity_fn=logdensity_fn,
-        step_size=step_size,
+        logdensity_fn = logdensity_fn,
+        step_size = step_size,
         integration_steps_fn=lambda key: jnp.ceil(L / step_size),
-        L_proposal_factor=jnp.inf,  # Fixed L (no random variation)
+        L_proposal_factor = jnp.inf,
     )
     
-    # Define one MCMC step
+    # One iteration
     def one_step(state, key):
-        # Propose new state with Metropolis acceptance
-        state, info = algorithm.step(key, state)
         
-        # Return updated state and tracked quantities
+        # Propose new state with Metropolis accpetance probability
+        state, info = algorithm.step(key, state)
         return state, (state.position, info.acceptance_rate)
     
-    # Generate random keys for each MCMC step
+    
+    # Seed/key for each sample
     keys = jax.random.split(run_key, chain_length)
     
-    # Run the MCMC chain
+    # Run MAMS
     final_state, (samples, acceptance_rates) = jax.lax.scan(
         one_step, 
         initial_state, 
         keys
     )
     
-    # Compute summary statistics
+    # Summary stats
     avg_acceptance = jnp.mean(acceptance_rates)
     ess = compute_ess(samples)
     integration_steps_per_iter = L / step_size
@@ -484,60 +369,37 @@ def run_mams_fixed(
     return samples, ess, avg_acceptance, integration_steps_per_iter, time_elapsed
 
 
-def run_adjusted_mclmc_dynamic(
+
+
+############################################################## MCMC Algorithms with auto-tuned parameters (regular blackjax)
+
+
+# Metropolis Adjusted MCLMC
+# Copied from here: https://blackjax-devs.github.io/sampling-book/algorithms/mclmc.html#adjusted-mclmc
+def run_mams_auto(
     logdensity_fn, 
     num_steps, 
     initial_position, 
     key
-):
-    """
-    Run MAMS with BlackJAX's automatic hyperparameter tuning.
+    ):
     
-    This uses BlackJAX's built-in adaptive scheme to find good
-    values of L and step_size automatically. It uses a portion
-    of the chain for tuning before collecting samples.
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target log density to sample from
-    num_steps : int
-        Number of samples to generate (after tuning)
-    initial_position : array
-        Starting position
-    key : PRNGKey
-        Random key for reproducibility
-        
-    Returns:
-    --------
-    samples : array, shape (num_steps, n_dims)
-        MCMC samples (post-tuning)
-    step_size : float
-        Auto-tuned step size
-    L : float
-        Auto-tuned trajectory length
-    time_elapsed : float
-        Total wall-clock time including tuning
-    """
-    # Start timing (includes tuning time)
+    # Start timing
     start_time = time.time()
     
-    # Split key for initialization, tuning, and sampling
+    # initialization, tuning, running seeds
     init_key, tune_key, run_key = jax.random.split(key, 3)
     
-    # Initialize sampler state
+    # Initial state of MAMS
     initial_state = blackjax.mcmc.adjusted_mclmc_dynamic.init(
         position=initial_position,
         logdensity_fn=logdensity_fn,
         random_generator_arg=init_key,
     )
     
-    # Define integration steps function (allows random trajectory lengths)
     integration_steps_fn = lambda avg_num_integration_steps: lambda k: jnp.ceil(
         jax.random.uniform(k) * rescale(avg_num_integration_steps)
     )
     
-    # Define MAMS kernel for tuning
     kernel = lambda rng_key, state, avg_num_integration_steps, step_size, inverse_mass_matrix: \
         blackjax.mcmc.adjusted_mclmc_dynamic.build_kernel(
             integration_steps_fn=integration_steps_fn(avg_num_integration_steps),
@@ -550,8 +412,6 @@ def run_adjusted_mclmc_dynamic(
             L_proposal_factor=jnp.inf,
         )
     
-    # Automatically find good L and step_size
-    # This uses 30% of num_steps for tuning (10% + 10% + 10%)
     (
         blackjax_state_after_tuning,
         blackjax_mclmc_sampler_params,
@@ -561,18 +421,18 @@ def run_adjusted_mclmc_dynamic(
         num_steps=num_steps,
         state=initial_state,
         rng_key=tune_key,
-        target=0.9,  # Target 90% acceptance
-        frac_tune1=0.1,  # Fraction for step size tuning
-        frac_tune2=0.1,  # Fraction for L tuning
-        frac_tune3=0.1,  # Fraction for mass matrix tuning
-        diagonal_preconditioning=True,
+        target = 0.90,      # Target 90% acceptance
+        frac_tune1 = 0.1,  # Fraction for step size tuning
+        frac_tune2 = 0.1,  # Fraction for L tuning
+        frac_tune3 = 0.1,  # Fraction for mass matrix tuning
+        diagonal_preconditioning = False, # Turn off diagonal preconditioner for fair comparison against BayesOpt
     )
     
-    # Extract tuned hyperparameters
+    # Extract hyperparameters from tuning phase
     step_size = blackjax_mclmc_sampler_params.step_size
     L = blackjax_mclmc_sampler_params.L
     
-    # Create final sampling algorithm with tuned parameters
+    # The algorithm with the tuned hyperparameters
     alg = blackjax.adjusted_mclmc_dynamic(
         logdensity_fn=logdensity_fn,
         step_size=step_size,
@@ -583,7 +443,7 @@ def run_adjusted_mclmc_dynamic(
         L_proposal_factor=jnp.inf,
     )
     
-    # Run sampling with tuned parameters
+    # Run it
     _, samples = run_inference_algorithm(
         rng_key=run_key,
         initial_state=blackjax_state_after_tuning,
@@ -593,196 +453,176 @@ def run_adjusted_mclmc_dynamic(
         progress_bar=False,
     )
     
-    # Total time including tuning
+    # Time including tuning and discarding tuning phase
     time_elapsed = time.time() - start_time
     
     return samples, step_size, L, time_elapsed
 
-# ============================================================================
-# BAYESIAN OPTIMIZATION
-# ============================================================================
+
+
+# MAKE NUTS AND MCLMC 
+
+
+
+
+########################################################################## BayesOpt them
 
 def run_bayesopt_tuning(
-    logdensity_fn,
-    initial_position,
-    fixed_key,
-    algorithm_name,
-    num_iterations=50,
-    chain_length=1000,
-    target_acceptance=0.775,
-    lambda_penalty=100,
+    logdensity_fn, # Target density
+    initial_position, # Consitent starting position
+    fixed_key, # Reproducible
+    algorithm_name, # MAMS/MCLMC/NUTS
+    num_iterations = 50, # Number of BayesOpt explore/exploit
+    chain_length = 1000,
+    target_acceptance = 0.775, # NUTS target is 0.65, MAMS target is 0.90, 0.775 is between
+    lambda_penalty = 100, # Penalize difference between target and actual accpetance rate to stop BS never accept high to get high ESS
 ):
-    """
-    Use Bayesian Optimization to tune MCMC hyperparameters.
     
-    This searches over hyperparameter space using a Gaussian Process
-    surrogate model to efficiently find configurations that maximize
-    raw ESS (with acceptance penalty).
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target distribution to sample from
-    initial_position : array
-        Starting position for test chains
-    fixed_key : PRNGKey
-        Fixed random key for fair comparison across iterations
-    algorithm_name : str
-        One of 'NUTS', 'MCLMC', or 'MAMS'
-    num_iterations : int
-        Number of Bayesian Optimization iterations
-    chain_length : int
-        Length of test chains for evaluation
-    target_acceptance : float
-        Target acceptance probability
-    lambda_penalty : float
-        Penalty weight for acceptance deviation
-        
-    Returns:
-    --------
-    results : dict
-        Dictionary containing optimization history and best parameters
-    """
-    # Initialize results storage
+    # Store history and results
     results = {
-        'iteration': [],           # BO iteration number
-        'ess': [],                 # Effective sample size (raw)
-        'acceptance_rate': [],     # Acceptance probability
-        'objective': [],           # Objective function value
+        'iteration': [],           # BayesOpt iteration number
+        'ess': [],  
+        'acceptance_rate': [],    
+        'objective': [],           # Value of Objective function fo rthis iteration
         'integration_steps': [],   # Leapfrog steps per sample
-        'hyperparams': [],         # Hyperparameter configuration
+        'hyperparams': [],         # Hyperparameter pair
         'time_per_eval': [],       # Time to run one evaluation
     }
     
-    # Start timing total optimization
+    # Start timing the full optimization procedure
     start_time = time.time()
     
-    # Configure hyperparameter search space based on algorithm
+    
+    #  Hyperparameter search space per algorithm
+    
     if algorithm_name == 'NUTS':
-        # NUTS only needs step size (it auto-tunes trajectory length)
+        # NUTS only needs step size since it does the tree thing for L
         parameters = [
-            {'name': 'step_size', 'type': 'range', 'bounds': [0.001, 1.0]}
+            {'name': 'step_size', 'type': 'range', 'bounds': [0.001, 2.0]}
         ]
         
-        # Define function to run NUTS with given parameters
+        # Run NUTS with given stepsize
         def run_with_params(params_dictionary):
-            # Extract hyperparameters
+            
             step_size = params_dictionary['step_size']
             
             # Use identity inverse mass matrix
             inv_mass_matrix = jnp.ones(len(initial_position))
             
-            # Run NUTS and collect diagnostics
+            # Run NUTS and get the results and stats
             _, ess, acc, n, eval_time = run_nuts_fixed(
-                logdensity_fn=logdensity_fn, 
-                chain_length=chain_length, 
-                initial_position=initial_position, 
-                key=fixed_key,
-                step_size=step_size,
-                inv_mass_matrix=inv_mass_matrix
+                logdensity_fn = logdensity_fn, 
+                chain_length = chain_length, 
+                initial_position = initial_position, 
+                key = fixed_key,
+                step_size = step_size,
+                inv_mass_matrix = inv_mass_matrix
             )
             
             return ess, acc, n, eval_time
         
+        
+    # MCLMC needs L and step size tuned
     elif algorithm_name == 'MCLMC':
-        # MCLMC needs both L and step_size
+        
+        
         parameters = [
             {'name': 'L', 'type': 'range', 'bounds': [0.5, 50.0]},
-            {'name': 'step_size', 'type': 'range', 'bounds': [0.01, 2.0]}
+            {'name': 'step_size', 'type': 'range', 'bounds': [0.01, 5.0]}
         ]
         
         # MCLMC never rejects
-        target_acceptance = 1.0
+        # target_acceptance = 1.0
         
-        # Define function to run MCLMC with given parameters
+        # Run MCLMC with L and step size
         def run_with_params(params_dictionary):
-            # Extract hyperparameters
+            
+            
             L = params_dictionary['L']
             step_size = params_dictionary['step_size']
             
-            # Run MCLMC and collect diagnostics
+            # Run MCLMC
             _, ess, acc, n, eval_time = run_mclmc_fixed(
-                logdensity_fn=logdensity_fn, 
-                chain_length=chain_length, 
-                initial_position=initial_position, 
-                key=fixed_key,
-                L=L,
-                step_size=step_size
+                logdensity_fn = logdensity_fn, 
+                chain_length = chain_length, 
+                initial_position = initial_position, 
+                key = fixed_key,
+                L = L,
+                step_size = step_size
             )
             
             return ess, acc, n, eval_time
         
+        
+    # MAMS needs L and step size
     elif algorithm_name == 'MAMS':
-        # MAMS needs both L and step_size
-        # Use tighter bounds to avoid trivial solutions
+        
+        
         parameters = [
             {'name': 'L', 'type': 'range', 'bounds': [0.5, 50.0]},
-            {'name': 'step_size', 'type': 'range', 'bounds': [0.01, 2.0]}
+            {'name': 'step_size', 'type': 'range', 'bounds': [0.01, 5.0]}
         ]
         
-        # MAMS targets 90% acceptance (Robnik et al recommendation)
-        target_acceptance = 0.90
+        # MAMS target acceptance is 90% (Robnik et al recommendation)
+        # target_acceptance = 0.90
         
-        # Define function to run MAMS with given parameters
         def run_with_params(params_dictionary):
-            # Extract hyperparameters
             L = params_dictionary['L']
             step_size = params_dictionary['step_size']
             
-            # Run MAMS and collect diagnostics
             _, ess, acc, n, eval_time = run_mams_fixed(
-                logdensity_fn=logdensity_fn, 
-                chain_length=chain_length, 
-                initial_position=initial_position, 
-                key=fixed_key,
-                L=L,
-                step_size=step_size
+                logdensity_fn = logdensity_fn, 
+                chain_length = chain_length, 
+                initial_position = initial_position, 
+                key = fixed_key,
+                L = L,
+                step_size = step_size
             )
             
             return ess, acc, n, eval_time
-        
-    else:
-        raise ValueError(f"Unknown algorithm: {algorithm_name}")
     
-    # Initialize Bayesian Optimization experiment
-    # batch_size=1 means we evaluate one configuration at a time
+    
+    
+    # Initialize BayesOpt experiment
+    # batch_size = 1 means try one hyperparameter set at a time
     experiment = optimization(
-        parameters=parameters, 
-        batch_size=1
+        parameters = parameters, 
+        batch_size = 1
     )
     
-    # Initialize BO state
     step = None
     experiment_results = []
     
-    # Main optimization loop
+    
+    # Loop over BayesOpt iteration
     for i in range(num_iterations):
+        
+        # Tell me where the optimization is at
         print(f"Iteration {i+1}/{num_iterations}")
         
-        # Get next hyperparameter configuration from acquisition function
-        # The acquisition function balances exploration vs exploitation
+        # Acquisition function choose next L stepsize pair (step size only for NUTS)
         step, parameterizations = experiment.next(step, experiment_results)
         
-        # Extract suggested hyperparameters
+        # Extract next hyperparameters to try
         params_dict = parameterizations[0]
         
-        # Evaluate MCMC performance with these hyperparameters
+        # Stats for these hyperparameters
         ess, acc, n, eval_time = run_with_params(params_dict)
         
-        # Compute objective function for this configuration
-        # Just ESS with acceptance penalty - no ratios!
+        # Compute objective for these hyperparameters
         obj = objective_function(
-            ess=ess, 
-            acceptance_rate=acc, 
-            target_acceptance=target_acceptance, 
-            lambda_penalty=lambda_penalty
+            ess = ess, 
+            acceptance_rate = acc, 
+            target_acceptance = target_acceptance, 
+            lambda_penalty = lambda_penalty
         )
         
-        # Update Bayesian Optimization with result
-        # This trains the GP surrogate model
+        # Update results history
+        
+        # These hyperparametrs get this objective function value
         experiment_results = [(params_dict, float(obj))]
         
-        # Store all metrics for this iteration
+        # Add all these stats to the history
         results['iteration'].append(i)
         results['ess'].append(float(ess))
         results['acceptance_rate'].append(float(acc))
@@ -792,32 +632,31 @@ def run_bayesopt_tuning(
         results['time_per_eval'].append(eval_time)
         
         # Print iteration summary
-        print(f"  {algorithm_name}: ESS={ess:.1f}, acc={acc:.3f}, n={n:.1f}")
+        print(f"{algorithm_name}: ESS is {ess:.1f} and acceptance rate  is {acc:.3f}")
     
-    # Calculate total optimization time
+    # Total optimization time
     total_time = time.time() - start_time
     
-    # Find best hyperparameter configuration
-    best_idx = jnp.argmax(jnp.array(results['objective']))
-    best_params = results['hyperparams'][best_idx]
+    # Which hyperparameters maximized the objective?
+    best_id = jnp.argmax(jnp.array(results['objective']))
+    best_params = results['hyperparams'][best_id]
     
-    # Print optimization summary
-    print(f"\n{'='*50}")
-    print(f"{algorithm_name} Optimization Complete")
-    print(f"{'='*50}")
-    print(f"Total time: {total_time:.2f}s")
-    print(f"\nBest configuration:")
-    print(f"  Params: {best_params}")
-    print(f"  ESS: {results['ess'][best_idx]:.1f}")
-    print(f"  Acceptance: {results['acceptance_rate'][best_idx]:.3f}")
-    print(f"  Integration steps/iter: {results['integration_steps'][best_idx]:.1f}")
+    # Print summary
+    print(f"{algorithm_name} BayesOpt done")
+    print(f"Time: {total_time:.2f}s")
+    print(f"Best hyperparamwetrs: {best_params}")
+    print(f"ESS: {results['ess'][best_id]:.1f}")
+    print(f"Acceptance rate: {results['acceptance_rate'][best_id]:.3f}")
     
     return results
 
-# ============================================================================
-# MULTI-CHAIN FUNCTIONS
-# ============================================================================
 
+
+
+
+############################################################ Run many chains for an algorithm 
+
+# Run many MAMS chains with the Robnik et al auto tuned L and step size
 def run_mams_multiple_chains(
     logdensity_fn, 
     num_chains, 
@@ -826,47 +665,8 @@ def run_mams_multiple_chains(
     base_key, 
     L, 
     step_size
-):
-    """
-    Run multiple MAMS chains with fixed hyperparameters.
+    ):
     
-    Running multiple chains allows us to:
-    1. Compute R-hat convergence diagnostic
-    2. Get more robust estimates of ESS
-    3. Assess variability in sampler performance
-    
-    Parameters:
-    -----------
-    logdensity_fn : function
-        Target distribution
-    num_chains : int
-        Number of independent chains to run
-    num_steps : int
-        Number of samples per chain
-    initial_position : array
-        Starting position (same for all chains)
-    base_key : PRNGKey
-        Base random key (will be split for each chain)
-    L : float
-        Trajectory length
-    step_size : float
-        Leapfrog step size
-        
-    Returns:
-    --------
-    all_samples : array, shape (num_chains, num_steps, n_dims)
-        Samples from all chains
-    all_ess : array, shape (num_chains,)
-        ESS for each chain
-    all_acceptance : array, shape (num_chains,)
-        Acceptance rates (all ~0.9 for MAMS)
-    all_step_sizes : array, shape (num_chains,)
-        Auto-tuned step sizes
-    all_L : array, shape (num_chains,)
-        Auto-tuned trajectory lengths
-    total_time : float
-        Total wall-clock time including tuning
-    """
     # Start timing
     start_time = time.time()
     
@@ -878,20 +678,20 @@ def run_mams_multiple_chains(
     
     # Run each chain with independent tuning
     for i in range(num_chains):
-        print(f"  Chain {i+1}/{num_chains} (auto-tuning)...")
+        print(f"  Chain {i+1}/{num_chains} (auto-tuning)")
         
-        # Create unique random key for this chain
+        # Random key for this chain
         chain_key = jax.random.fold_in(base_key, i)
         
         # Run MAMS with automatic hyperparameter tuning
-        samples, step_size, L, chain_time = run_adjusted_mclmc_dynamic(
-            logdensity_fn=logdensity_fn, 
-            num_steps=num_steps, 
-            initial_position=initial_position, 
-            key=chain_key
+        samples, step_size, L, chain_time = run_mams_auto(
+            logdensity_fn = logdensity_fn, 
+            num_steps = num_steps, 
+            initial_position = initial_position, 
+            key = chain_key
         )
         
-        # Compute diagnostics
+        # Get ESS
         ess = compute_ess(samples)
         
         # Store results
@@ -901,27 +701,22 @@ def run_mams_multiple_chains(
         all_ess.append(ess)
         
         # Print chain summary
-        print(f"    L={L:.3f}, ε={step_size:.5f}, ESS={ess:.1f}")
+        print(f"L is {L:.3f}, step size is {step_size:.5f}, and ESS is {ess:.1f}")
     
-    # Stack all samples
+    # Samples from all the chains
     all_samples = jnp.stack(all_samples, axis=0)
     
-    # MAMS targets 90% acceptance
+    # NEED TO GET THE REAL ACCPETANCES
     all_acceptance = jnp.ones(num_chains) * 0.9
     
-    # Total time including all tuning
+    # Total time since teh begining
     total_time = time.time() - start_time
     
-    return (
-        all_samples, 
-        jnp.array(all_ess), 
-        all_acceptance, 
-        jnp.array(all_step_sizes), 
-        jnp.array(all_L), 
-        total_time
-    )
+    # Return the results form teh multiple chains
+    return (all_samples, jnp.array(all_ess), all_acceptance, jnp.array(all_step_sizes), jnp.array(all_L), total_time)
 
 
+# Run multiple chains of MAMS with the BayesOpt hyperparameters
 def run_mams_multiple_chains_fixed(
     logdensity_fn, 
     num_chains, 
@@ -930,143 +725,108 @@ def run_mams_multiple_chains_fixed(
     base_key, 
     L, 
     step_size
-):
-    """
-    Run multiple MAMS chains with FIXED hyperparameters (no auto-tuning).
-    For validating BayesOpt results.
-    """
+    ):
+    
+    # Time the procedure
     start_time = time.time()
     
+    # Store teh results
     all_samples = []
     all_ess = []
     all_acceptance = []
     
+    # Loop over teh chains (could paralelize but this is fine)
     for i in range(num_chains):
-        print(f"  Chain {i+1}/{num_chains} (fixed L={L:.3f}, ε={step_size:.5f})...")
         
+        # Tell me which chain and the hyperparameters
+        print(f"Chain {i+1}/{num_chains} with L {L:.3f}, and step size {step_size:.5f}")
+        
+        # The ith seed
         chain_key = jax.random.fold_in(base_key, i)
         
-        # Use FIXED hyperparameters
+        # Use the BayesOpt-ed hyperparameters
         samples, ess, acc, _, chain_time = run_mams_fixed(
-            logdensity_fn=logdensity_fn,
-            chain_length=num_steps,
-            initial_position=initial_position,
-            key=chain_key,
-            L=L,
-            step_size=step_size
+            logdensity_fn = logdensity_fn,
+            chain_length = num_steps,
+            initial_position = initial_position,
+            key = chain_key,
+            L = L,
+            step_size = step_size
         )
         
+        # Store the resulst and samples
         all_samples.append(samples)
         all_ess.append(ess)
         all_acceptance.append(acc)
         
-        print(f"    ESS={ess:.1f}, acceptance={acc:.3f}")
+        print(f"Chains {i+1} has ESS {ess:.1f} and acceptance rate is {acc:.3f}")
     
+    # Keep all the samples
     all_samples = jnp.stack(all_samples, axis=0)
+    
+    # The time to do all this
     total_time = time.time() - start_time
     
-    return (
-        all_samples,
-        jnp.array(all_ess),
-        jnp.array(all_acceptance),
-        total_time
-    )
+    return (all_samples, jnp.array(all_ess), jnp.array(all_acceptance), total_time)
 
-# ============================================================================
-# VISUALIZATION FUNCTIONS
-# ============================================================================
 
-def plot_bayesopt_progress(results_dict, save_prefix=None):
-    """
-    Plot Bayesian Optimization progress for all algorithms.
+
+
+############################################### Plot the iterations of BayesOpt
+
+def plot_bayesopt_progress(results_dict, save_plot_name = None):
     
-    Shows how optimization evolves over iterations.
-    Simple plots: ESS, acceptance, integration steps, objective.
-    
-    Parameters:
-    -----------
-    results_dict : dict
-        Dictionary with keys like 'nuts', 'mclmc', 'mams'
-        Each value is a results dict from run_bayesopt_tuning
-    save_prefix : str, optional
-        If provided, save figure with this prefix
-    """
-    # Collect available algorithms
+    # Check for available algorithm results to plot
     algorithms = []
     for name in ['NUTS', 'MCLMC', 'MAMS']:
         key = name.lower()
         if key in results_dict and results_dict[key] is not None:
             algorithms.append((name, key))
-    
-    # Check if we have results to plot
     if not algorithms:
-        print("No results to plot!")
+        print("No results to plot")
         return
     
-    # Create figure with 2x2 subplots
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # Plot each algorithm's progress
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize = (14, 10))
+    
+    # Plot each algorithm's progress as BayesOpt goes on
     for alg_name, alg_key in algorithms:
         results = results_dict[alg_key]
         iterations = results['iteration']
         
-        # Panel 1: Raw ESS
-        axes[0, 0].plot(
-            iterations, 
-            results['ess'], 
-            'o-', 
-            label=alg_name, 
-            markersize=4
-        )
+        # Plot #1: ESS
+        axes[0, 0].plot(iterations, results['ess'], 'o-', label = alg_name, markersize = 4)
         
-        # Panel 2: Acceptance rate
-        axes[0, 1].plot(
-            iterations, 
-            results['acceptance_rate'], 
-            'o-', 
-            label=alg_name, 
-            markersize=4
-        )
+        # Plot #2: acceptance rate
+        axes[0, 1].plot(iterations, results['acceptance_rate'], 'o-', label = alg_name, markersize = 4)
         
-        # Panel 3: Integration steps
-        axes[1, 0].plot(
-            iterations, 
-            results['integration_steps'], 
-            'o-', 
-            label=alg_name, 
-            markersize=4
-        )
+        # Plot #3: number of leapfrog steps
+        axes[1, 0].plot(iterations, results['integration_steps'], 'o-', label = alg_name, markersize = 4)
         
-        # Panel 4: Objective function
-        axes[1, 1].plot(
-            iterations, 
-            results['objective'], 
-            'o-', 
-            label=alg_name, 
-            markersize=4
-        )
+        # Plot #4: value of objective function
+        axes[1, 1].plot(iterations, results['objective'], 'o-', label = alg_name, markersize = 4)
     
-    # Configure Panel 1: ESS
+    # Plot 1: ESS
     axes[0, 0].set_ylabel('ESS')
     axes[0, 0].set_title('Effective Sample Size')
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
     
-    # Configure Panel 2: Acceptance
+    # Plot 2: Acceptance
     axes[0, 1].set_ylabel('Acceptance Rate')
     axes[0, 1].set_title('Acceptance Rate')
     axes[0, 1].legend()
     axes[0, 1].grid(True, alpha=0.3)
     
-    # Configure Panel 3: Integration steps
+    # Plot 3: Integration steps
     axes[1, 0].set_xlabel('Iteration')
-    axes[1, 0].set_ylabel('Integration Steps')
-    axes[1, 0].set_title('Integration Steps per Iteration')
+    axes[1, 0].set_ylabel('Leapfrog Steps')
+    axes[1, 0].set_title('Leapfrog Steps per Iteration')
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
     
-    # Configure Panel 4: Objective
+    # Plot 4: Objective
     axes[1, 1].set_xlabel('Iteration')
     axes[1, 1].set_ylabel('Objective Value')
     axes[1, 1].set_title('Objective Function')
@@ -1076,100 +836,68 @@ def plot_bayesopt_progress(results_dict, save_prefix=None):
     # Adjust layout
     plt.tight_layout()
     
-    # Save if requested
-    if save_prefix:
-        filename = f'{save_prefix}_progress.png'
-        plt.savefig(filename, dpi=150, bbox_inches='tight')
+    # Save plot if name is given
+    if save_plot_name:
+        filename = f'{save_plot_name}.png'
+        plt.savefig(filename, dpi = 150, bbox_inches = 'tight')
         print(f"Saved {filename}")
     
     plt.show()
 
 
-def plot_hyperparameter_space(results_dict, save_prefix=None):
-    """
-    Plot hyperparameter space exploration for MCLMC and MAMS.
+
+############################################### Plot the hyperparameter space (L, epsilon) that BayesOpt explores and exploits coloured by ESS
+
+def plot_hyperparameter_space(results_dict, save_plot_name = None):
     
-    Simple scatter plot of L vs step_size colored by ESS.
-    
-    Parameters:
-    -----------
-    results_dict : dict
-        Dictionary containing results from BayesOpt tuning
-    save_prefix : str, optional
-        If provided, save figure with this prefix
-    """
-    # Only MCLMC and MAMS have 2D hyperparameter space
+    # Only MCLMC and MAMS have 2 dimensional hyperparameter space
     algorithms = []
     for name in ['MCLMC', 'MAMS']:
         key = name.lower()
         if key in results_dict and results_dict[key] is not None:
             algorithms.append((name, key))
     
-    # Check if we have results
     if not algorithms:
         print("No MCLMC/MAMS results!")
         return
     
-    # Create subplots
-    fig, axes = plt.subplots(1, len(algorithms), figsize=(9 * len(algorithms), 7))
+    # Subplots
+    fig, axes = plt.subplots(1, len(algorithms), figsize=(9, 7))
     if len(algorithms) == 1:
         axes = [axes]
     
-    # Plot each algorithm
+    # Plot for each algorithm
     for ax, (alg_name, alg_key) in zip(axes, algorithms):
         results = results_dict[alg_key]
         
-        # Extract data
         L_values = np.array([p['L'] for p in results['hyperparams']])
         step_sizes = np.array([p['step_size'] for p in results['hyperparams']])
         ess_values = np.array(results['ess'])
         
-        # Create scatter plot colored by ESS
-        scatter = ax.scatter(
-            step_sizes, 
-            L_values, 
-            c=ess_values,
-            s=100,
-            cmap='viridis',
-            alpha=0.7, 
-            edgecolors='black', 
-            linewidths=1.5
-        )
+        # Scatter plot coloured by ESS
+        scatter = ax.scatter(step_sizes, L_values, c = ess_values, s = 100, cmap = 'viridis', alpha = 0.7, edgecolors = 'black', linewidths = 1)
         
-        # Configure axes
-        ax.set_xlabel('Step Size (ε)', fontsize=14)
-        ax.set_ylabel('Trajectory Length (L)', fontsize=14)
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.set_title(f'{alg_name}: Hyperparameter Space', fontsize=16)
-        ax.grid(True, alpha=0.3, which='both')
+        # Mess around with plot axes
+        ax.set_xlabel('Step Size', fontsize=14)
+        ax.set_ylabel('Trajectory Length', fontsize=14)
+        #ax.set_xscale('log')
+        #ax.set_yscale('log')
+        ax.set_title(f'{alg_name}: Hyperparameter Space', fontsize = 16)
+        ax.grid(True, alpha=0.3, which = 'both')
         
-        # Add colorbar for ESS
-        cbar = plt.colorbar(scatter, ax=ax, label='ESS')
+        # Add colour legend for ESS
+        cbar = plt.colorbar(scatter, ax = ax, label = 'ESS')
         
-        # Annotate starting point
+        # Show starting point
         ax.annotate(
             'Start', 
-            xy=(step_sizes[0], L_values[0]), 
-            xytext=(10, 10), 
-            textcoords='offset points',
-            fontsize=10, 
-            color='blue', 
-            fontweight='bold',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
-            arrowprops=dict(arrowstyle='->', color='blue', lw=1.5)
-        )
+            xy=(step_sizes[0], L_values[0]), xytext=(10, 10), textcoords='offset points', fontsize=10, color='blue', fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7), arrowprops=dict(arrowstyle='->', color='blue', lw=1.5))
         
         # Annotate best point
         best_idx = np.argmax(results['objective'])
-        ax.annotate(
-            'Best', 
-            xy=(step_sizes[best_idx], L_values[best_idx]), 
-            xytext=(10, -20), 
-            textcoords='offset points',
-            fontsize=10, 
-            color='red', 
-            fontweight='bold',
+        ax.annotate('Best', xy=(step_sizes[best_idx], L_values[best_idx]), xytext=(10, -20), 
+            textcoords='offset points', fontsize=10, color='red', fontweight='bold',
             bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
             arrowprops=dict(arrowstyle='->', color='red', lw=1.5)
         )
@@ -1177,209 +905,155 @@ def plot_hyperparameter_space(results_dict, save_prefix=None):
     # Adjust layout
     plt.tight_layout()
     
-    # Save if requested
-    if save_prefix:
-        filename = f'{save_prefix}_hyperparameter_space.png'
+    # Save plot if name given
+    if save_plot_name:
+        filename = f'{save_plot_name}_hyperparameter_space.png'
         plt.savefig(filename, dpi=150, bbox_inches='tight')
         print(f"Saved {filename}")
     
     plt.show()
 
-# ============================================================================
-# EXPERIMENT RUNNERS
-# ============================================================================
 
-def compare_algorithms(dim=5, iterations=20, chain_length=1000):
-    """
-    Compare NUTS, MCLMC, and MAMS using Bayesian Optimization.
+
+
+####################################### Do experiments
+
+
+# BayesOpt MAMS, NUTS, and MCLMC
+def compare_algorithms(dim = 5, iterations = 20, chain_length = 1000):
     
-    Tunes each algorithm's hyperparameters and compares performance.
-    
-    Parameters:
-    -----------
-    dim : int
-        Dimensionality of test problem (Neal's funnel)
-    iterations : int
-        Number of BayesOpt iterations per algorithm
-    chain_length : int
-        Length of test chains for evaluation
-        
-    Returns:
-    --------
-    nuts_results : dict
-        NUTS optimization results
-    mclmc_results : dict
-        MCLMC optimization results
-    mams_results : dict
-        MAMS optimization results
-    """
-    # Create test problem
+    # Create Funnel target with dimension dim
+    # NEED TO MAKE OTHER TARGETS
     logdensity_fn = make_funnel_logdensity(dim)
+    
+    # Start at origin
     initial_position = jnp.zeros(dim)
     
     # Tune NUTS
-    print("\n1. Tuning NUTS...")
+    print("########################################### BayesOpt-ing NUTS")
     nuts_results = run_bayesopt_tuning(
-        logdensity_fn=logdensity_fn, 
-        initial_position=initial_position, 
-        fixed_key=jax.random.key(SEED_NUTS_TUNING), 
-        algorithm_name='NUTS',
-        num_iterations=iterations, 
-        chain_length=chain_length
+        logdensity_fn = logdensity_fn, 
+        initial_position = initial_position, 
+        fixed_key = jax.random.key(SEED_NUTS_TUNING), 
+        algorithm_name = 'NUTS',
+        num_iterations = iterations, 
+        chain_length = chain_length
     )
     
     # Tune MCLMC
-    print("\n2. Tuning MCLMC...")
+    print("########################################### BayesOpt-ing MCLMC")
     mclmc_results = run_bayesopt_tuning(
-        logdensity_fn=logdensity_fn, 
-        initial_position=initial_position, 
-        fixed_key=jax.random.key(SEED_MCLMC_TUNING), 
-        algorithm_name='MCLMC',
-        num_iterations=iterations, 
-        chain_length=chain_length
+        logdensity_fn = logdensity_fn, 
+        initial_position = initial_position, 
+        fixed_key = jax.random.key(SEED_MCLMC_TUNING), 
+        algorithm_name = 'MCLMC',
+        num_iterations = iterations, 
+        chain_length = chain_length
     )
     
     # Tune MAMS
-    print("\n3. Tuning MAMS...")
+    print("########################################## BayesOpt-ing MAMS")
     mams_results = run_bayesopt_tuning(
-        logdensity_fn=logdensity_fn, 
-        initial_position=initial_position, 
-        fixed_key=jax.random.key(SEED_MAMS_TUNING), 
-        algorithm_name='MAMS',
-        num_iterations=iterations, 
-        chain_length=chain_length
+        logdensity_fn = logdensity_fn, 
+        initial_position = initial_position, 
+        fixed_key = jax.random.key(SEED_MAMS_TUNING), 
+        algorithm_name = 'MAMS',
+        num_iterations = iterations, 
+        chain_length = chain_length
     )
     
-    # Create visualizations
-    print("\nCreating visualizations...")
+    
+    # Plot the results
     results_dict = {
         'nuts': nuts_results,
         'mclmc': mclmc_results,
         'mams': mams_results
     }
+    plot_bayesopt_progress(results_dict, save_plot_name = 'BayesOpt_sequence')
+    plot_hyperparameter_space(results_dict, save_plot_name ='BayesOpt_hyperparameter_space')
     
-    plot_bayesopt_progress(results_dict, save_prefix='bayesopt')
-    plot_hyperparameter_space(results_dict, save_prefix='bayesopt')
     
-    # Print comparison table
-    print("\n" + "="*80)
-    print("ALGORITHM COMPARISON (at best hyperparameters)")
-    print("="*80)
-    print(f"\n{'Algorithm':<12} {'ESS':<12} {'Acceptance':<15} {'Steps/iter':<15}")
-    print("-"*80)
-    
-    for alg_name, alg_results in [('NUTS', nuts_results), 
-                                   ('MCLMC', mclmc_results), 
-                                   ('MAMS', mams_results)]:
-        # Find best configuration
+    # Print results
+    print("Best hyperparameters for each of NUTS, MCLMC, and MAMS")    
+    for alg_name, alg_results in [('NUTS', nuts_results), ('MCLMC', mclmc_results), ('MAMS', mams_results)]:
+        
+        # Which iteration
         best_idx = jnp.argmax(jnp.array(alg_results['objective']))
         
-        # Extract metrics
+        # Stats for that iteration
         ess = alg_results['ess'][best_idx]
         acc = alg_results['acceptance_rate'][best_idx]
         steps = alg_results['integration_steps'][best_idx]
         
-        # Print row
+        # Print stats for the best hyperparameter settings
+        print("Algorithm       ESS        Acceptance Rate          Steps = ceilling(L/epsilon)")
         print(f"{alg_name:<12} {ess:<12.1f} {acc:<15.3f} {steps:<15.1f}")
     
     return nuts_results, mclmc_results, mams_results
 
 
-def compare_mams_tuning_methods(dim=5, num_chains=4, num_steps=1000):
-    """
-    Compare BayesOpt tuning vs BlackJAX automatic tuning for MAMS.
+# Compare Robnik et al auto tuning to BayesOpt parameters
+def compare_mams_tuning_methods(dim = 5, num_chains = 4, num_steps = 1000):
     
-    This is the key experiment: does Bayesian Optimization find
-    better hyperparameters than BlackJAX's built-in adaptive scheme?
-    
-    Parameters:
-    -----------
-    dim : int
-        Dimensionality of test problem
-    num_chains : int
-        Number of independent chains for validation
-    num_steps : int
-        Number of samples per chain
-        
-    Returns:
-    --------
-    bayesopt_samples : array
-        Samples from BayesOpt-tuned chains
-    auto_samples : array
-        Samples from auto-tuned chains
-    mams_results : dict
-        BayesOpt tuning history
-    """
-    # Create test problem
+    # Make funnel or another target density
     logdensity_fn = make_funnel_logdensity(dim)
+    
+    # Start at the origin
     initial_position = jnp.zeros(dim)
     
-    # ========================================================================
-    # STEP 1: Bayesian Optimization Tuning
-    # ========================================================================
     
-    print("\nSTEP 1: BAYESIAN OPTIMIZATION TUNING")
-    print("="*70)
-    
+    print("BayesOpt for best step size and L")    
     bayesopt_tuning_key = jax.random.key(SEED_MAMS_TUNING)
     mams_results = run_bayesopt_tuning(
-        logdensity_fn=logdensity_fn, 
-        initial_position=initial_position, 
-        fixed_key=bayesopt_tuning_key, 
-        algorithm_name='MAMS',
-        num_iterations=20, 
-        chain_length=1000
+        logdensity_fn = logdensity_fn, 
+        initial_position = initial_position, 
+        fixed_key = bayesopt_tuning_key, 
+        algorithm_name = 'MAMS',
+        num_iterations = 20, ############# Make this bigger to try more hyperparameter pairs
+        chain_length = 1000
     )
     
-    # Extract best hyperparameters
+    # Get the best settings
     best_idx = jnp.argmax(jnp.array(mams_results['objective']))
     best_params = mams_results['hyperparams'][best_idx]
     best_L = best_params['L']
     best_step_size = best_params['step_size']
+    print(f"Best hyperparametrs: L = {best_L:.5f}, epsilon = {best_step_size:.5f}")
     
-    print(f"\nBest found: L={best_L:.4f}, ε={best_step_size:.6f}")
     
-    # ========================================================================
-    # STEP 2: Validate BayesOpt with Multiple Chains
-    # ========================================================================
-    
-    print("\nSTEP 2: VALIDATE BAYESOPT WITH MULTIPLE CHAINS")
-    print("="*70)
+    # Do a few chains with those hyperparameters
+    print("Testing BayesOpt hyperparameters on a few chains")
     
     validation_key = jax.random.key(SEED_BAYESOPT_VALIDATION)
-    
     (
         bayesopt_samples, 
         bayesopt_ess, 
         bayesopt_acc, 
         bayesopt_time
     ) = run_mams_multiple_chains_fixed(
-        logdensity_fn=logdensity_fn, 
-        num_chains=num_chains, 
-        num_steps=num_steps, 
-        initial_position=initial_position, 
-        base_key=validation_key, 
-        L=best_L, 
-        step_size=best_step_size
+        logdensity_fn = logdensity_fn, 
+        num_chains = num_chains, 
+        num_steps = num_steps, 
+        initial_position = initial_position, 
+        base_key = validation_key, ############### Inside run_mams_multiple_chains_fixed it splits the key, make sure that gives different chians
+        L = best_L, 
+        step_size = best_step_size
     )
     
-    # Compute convergence diagnostic
+    # Compute R hat to check convergence
     bayesopt_rhat = compute_rhat(bayesopt_samples)
     
     # Print BayesOpt results
-    print(f"\nBayesOpt Results:")
-    print(f"  Mean ESS: {jnp.mean(bayesopt_ess):.1f} ± {jnp.std(bayesopt_ess):.1f}")
-    print(f"  Mean Acceptance: {jnp.mean(bayesopt_acc):.3f} ± {jnp.std(bayesopt_acc):.3f}")
-    print(f"  Max R-hat: {jnp.max(bayesopt_rhat):.4f}")
-    print(f"  Convergence: {'✓ Good' if jnp.max(bayesopt_rhat) < 1.01 else '⚠ Needs more steps'}")
+    print(f"BayesOpt Results:")
+    print(f"Mean ESS: {jnp.mean(bayesopt_ess):.1f} ± {jnp.std(bayesopt_ess):.1f}")
+    print(f"Mean Acceptance: {jnp.mean(bayesopt_acc):.3f} ± {jnp.std(bayesopt_acc):.3f}")
+    print(f"Max R-hat: {jnp.max(bayesopt_rhat):.4f}")
     
-    # ========================================================================
-    # STEP 3: Automatic Tuning with Multiple Chains
-    # ========================================================================
     
-    print("\nSTEP 3: AUTOMATIC TUNING WITH MULTIPLE CHAINS")
-    print("="*70)
-    print("Note: Each chain tunes independently")
+    
+    
+    # Run auto-tune
+    print("Using Robnik et al auto tuning where each chain does its own auto tuning")
     
     auto_key = jax.random.key(SEED_AUTO_VALIDATION)
     (
@@ -1395,138 +1069,49 @@ def compare_mams_tuning_methods(dim=5, num_chains=4, num_steps=1000):
         num_steps=num_steps, 
         initial_position=initial_position, 
         base_key=auto_key,
-        L=1.0,  # Ignored by auto-tuning
-        step_size=0.1  # Ignored by auto-tuning
+        L = 1.0,  # Ignored by auto-tuning but it seems to crash if nothing is given
+        step_size = 0.1  # Same as L
     )
     
-    # Compute convergence diagnostic
+    # Compute R hat
     auto_rhat = compute_rhat(auto_samples)
     
     # Print auto-tuning results
-    print(f"\nAuto-tuning Results:")
-    print(f"  Mean L: {jnp.mean(auto_L):.4f} ± {jnp.std(auto_L):.4f}")
-    print(f"  Mean ε: {jnp.mean(auto_step_sizes):.6f} ± {jnp.std(auto_step_sizes):.6f}")
-    print(f"  Mean ESS: {jnp.mean(auto_ess):.1f} ± {jnp.std(auto_ess):.1f}")
-    print(f"  Mean Acceptance: {jnp.mean(auto_acc):.3f} ± {jnp.std(auto_acc):.3f}")
-    print(f"  Max R-hat: {jnp.max(auto_rhat):.4f}")
-    print(f"  Convergence: {'✓ Good' if jnp.max(auto_rhat) < 1.01 else '⚠ Needs more steps'}")
+    print(f"Auto-tuning Results:")
+    print(f"Mean L: {jnp.mean(auto_L):.4f} ± {jnp.std(auto_L):.4f}")
+    print(f"Mean step size: {jnp.mean(auto_step_sizes):.6f} ± {jnp.std(auto_step_sizes):.6f}")
+    print(f"Mean ESS: {jnp.mean(auto_ess):.1f} ± {jnp.std(auto_ess):.1f}")
+    print(f"Mean Acceptance: {jnp.mean(auto_acc):.3f} ± {jnp.std(auto_acc):.3f}")
+    print(f"Max R-hat: {jnp.max(auto_rhat):.4f}")
     
-    # ========================================================================
-    # STEP 4: Final Comparison
-    # ========================================================================
-    
-    print("\n" + "="*80)
-    print("FINAL COMPARISON: BAYESOPT vs AUTO-TUNING")
-    print("="*80)
-    print(f"\n{'Metric':<30} {'BayesOpt':<25} {'Auto-tuned':<25} {'Winner':<15}")
-    print("-"*80)
-    
-    # Define metrics to compare
-    metrics = [
-        ('Mean ESS', jnp.mean(bayesopt_ess), jnp.mean(auto_ess), False),
-        ('Mean Acceptance', jnp.mean(bayesopt_acc), jnp.mean(auto_acc), False),
-        ('Max R-hat', jnp.max(bayesopt_rhat), jnp.max(auto_rhat), True),
-    ]
-    
-    # Print each metric
-    for name, bo_val, auto_val, lower_is_better in metrics:
-        # Determine winner
-        if lower_is_better:
-            # For R-hat, lower is better
-            winner = 'BayesOpt' if bo_val < auto_val else 'Auto-tuned'
-            print(f"{name:<30} {bo_val:<25.4f} {auto_val:<25.4f} {winner:<15}")
-        else:
-            # For ESS, higher is better (with 10% threshold)
-            if bo_val > auto_val * 1.1:
-                winner = 'BayesOpt'
-            elif auto_val > bo_val * 1.1:
-                winner = 'Auto-tuned'
-            else:
-                winner = 'Tie'
-            
-            if 'ESS' in name:
-                print(f"{name:<30} {bo_val:<25.1f} {auto_val:<25.1f} {winner:<15}")
-            else:
-                print(f"{name:<30} {bo_val:<25.3f} {auto_val:<25.3f} {winner:<15}")
-    
-    # Overall winner based on ESS
-    bo_ess = jnp.mean(bayesopt_ess)
-    auto_ess = jnp.mean(auto_ess)
-    
-    if bo_ess > auto_ess * 1.1:
-        pct_better = 100 * (bo_ess / auto_ess - 1)
-        print(f"\n✓ BayesOpt wins: {pct_better:.1f}% higher ESS")
-    elif auto_ess > bo_ess * 1.1:
-        pct_better = 100 * (auto_ess / bo_ess - 1)
-        print(f"\n✓ Auto-tuning wins: {pct_better:.1f}% higher ESS")
-    else:
-        print(f"\n≈ Tie: ESS values are comparable")
     
     return bayesopt_samples, auto_samples, mams_results
 
 
+
+
+
 def run_all_experiments(dim=5, num_chains=4, num_steps=1000):
-    """
-    Run all experiments: algorithm comparison and tuning comparison.
     
-    This is the main entry point for running the full experimental suite.
-    
-    Parameters:
-    -----------
-    dim : int
-        Dimensionality of test problem
-    num_chains : int
-        Number of chains for validation
-    num_steps : int
-        Number of samples per chain
-        
-    Returns:
-    --------
-    results : dict
-        Dictionary containing all experimental results
-    """
-    print("\n" + "="*70)
-    print("RUNNING ALL EXPERIMENTS")
-    print("="*70)
-    print(f"\nConfiguration:")
-    print(f"  Dimensionality: {dim}")
-    print(f"  Validation chains: {num_chains}")
-    print(f"  Steps per chain: {num_steps}")
+    print(f"Number of dimensions of target density: {dim}")
+    print(f"Number of chains for validation: {num_chains}")
+    print(f"Number of sampels per chain: {num_steps}")
     
     # Start timing
     total_start = time.time()
     
-    # ========================================================================
-    # Experiment 1: Compare Algorithms
-    # ========================================================================
-    
-    print("\n" + "="*70)
-    print("EXPERIMENT 1: ALGORITHM COMPARISON")
-    print("="*70)
-    
+    # Compare NUTS, MCLMC, and MAMS
     nuts_results, mclmc_results, mams_results = compare_algorithms(dim=dim)
     
-    # ========================================================================
-    # Experiment 2: Compare Tuning Methods
-    # ========================================================================
-    
-    print("\n" + "="*70)
-    print("EXPERIMENT 2: TUNING METHOD COMPARISON")
-    print("="*70)
-    
+    # Compare MAMS tuning
     bayesopt_samples, auto_samples, _ = compare_mams_tuning_methods(
         dim=dim, 
         num_chains=num_chains, 
         num_steps=num_steps
     )
     
-    # Total time for all experiments
+    # Total time for both experiments
     total_time = time.time() - total_start
-    
-    # Print final summary
-    print("\n" + "="*70)
-    print("ALL EXPERIMENTS COMPLETE")
-    print("="*70)
     print(f"Total time: {total_time:.2f}s ({total_time/60:.1f} min)")
     
     # Return all results
@@ -1538,7 +1123,13 @@ def run_all_experiments(dim=5, num_chains=4, num_steps=1000):
         'auto_samples': auto_samples
     }
 
-# ============================================================================
-# MAIN EXECUTION
-# ============================================================================
-results = run_all_experiments(dim=5, num_chains=4, num_steps=1000)
+
+
+
+# results = run_all_experiments(dim=5, num_chains=4, num_steps=1000)
+
+
+nuts_results, mclmc_results, mams_results = compare_algorithms(dim=5)
+
+
+bayesopt_samples, auto_samples, _ = compare_mams_tuning_methods(dim=5, num_chains = 4, num_steps = 1000)
