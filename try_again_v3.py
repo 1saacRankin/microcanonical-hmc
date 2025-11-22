@@ -19,6 +19,8 @@
 #################################################################################################### Import libraries
 # Imports from here: https://blackjax-devs.github.io/sampling-book/algorithms/mclmc.html#how-to-run-mclmc-in-blackjax
 
+# I always get my matplotlib and ggplot syntax mixed up
+# https://matplotlib.org/stable/users/explain/quick_start.html
 import matplotlib.pyplot as plt
 
 plt.rcParams["axes.spines.right"] = False
@@ -68,6 +70,9 @@ import time
 import arviz as az
 import xarray as xr
 
+# For auto-tuning function documnetation: https://blackjax-devs.github.io/blackjax/autoapi/blackjax/adaptation/adjusted_mclmc_adaptation/index.html
+
+# NUTS docmnetation: https://blackjax-devs.github.io/blackjax/autoapi/blackjax/mcmc/nuts/index.html
 
 
 # Make more seeds for tuning and validation
@@ -104,6 +109,8 @@ def make_funnel_logdensity(dim):
         return log_prob
     
     return logdensity
+
+# Rosenbrock eq4: https://arxiv.org/pdf/1903.09556
 
 
 
